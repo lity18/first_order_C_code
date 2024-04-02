@@ -19,6 +19,13 @@ int main(int argc, char* argv[])
         //read parameters from inputs
         MainCore maincore;
 
+        // initializes multilevel data
+        maincore.InitData();
+
+        // evolve
+        maincore.Evolve();
+
+
 
 
 

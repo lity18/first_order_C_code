@@ -1,0 +1,26 @@
+Initializing AMReX (24.03-5-gba95d4cd8758)...
+MPI initialized with 4 MPI processes
+MPI initialized with thread support level 0
+AMReX (24.03-5-gba95d4cd8758) initialized
+1 37.328274021 37.32827402
+1 37.32827402
+2 0.716525153
+3 97.52330948
+4 3.533611475
+2 0.716525153
+3 97.52330948
+4 3.533611475
+2 0.716525153
+3 97.52330948
+4 3.533611475
+
+1 37.32827402
+2 0.716525153
+3 97.52330948
+4 3.533611475
+
+Total Time: 0.240895082
+Unused ParmParse Variables:
+  [TOP]::amr.regrid_int(nvals = 1)  :: [2]
+
+AMReX (24.03-5-gba95d4cd8758) finalized
