@@ -82,6 +82,14 @@ public:
     void initbubble(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
          amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
          amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& dx);
+
+
+    // fillthe field value of bubble
+    void initbubble_0(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& dx,
+         std::vector<std::vector<double>> const& position_list);
+
     
     // generate bubble coordinate
     void bubble_position();
@@ -100,8 +108,28 @@ public:
 
 
 private:
+    // calculate txx, tyy,tzz,txy,txz,tyz
+    void energy_momentum_tensor();
+
+    // calculate txx, tyy,tzz, store in phi_old(0, 1, 2)
+    void partial_diag(int lev);
+
+    // calculate txy,txz,tyz, store in phi_old(0, 1, 2)
+    void partial_offdiag(int lev);
+
+    // evolve a time step at lev
+    void timeStep (int lev, amrex::Real time);
+
+    // Advance a single level for a single time step, updates flux registers
+    void AdvancePhiAtLevel (int lev, amrex::Real time, amrex::Real dt_lev);
+
     // set covered coarse cells to be the average of overlying fine cells
     void AverageDown ();
+
+    void AverageDownold ();
+
+    // more flexible version of AverageDown() that lets you average down across multiple levels
+    void AverageDownTo (int crse_lev);
 
     // read in some parameters from inputs file
     void ReadParameters();
@@ -118,17 +146,36 @@ private:
     void GetData (int lev, amrex::Real time, amrex::Vector<amrex::MultiFab*>& data,
                   amrex::Vector<amrex::Real>& datatime);
 
+    // write plotfile to disk
+    void WritePlotFile () const;
+
+    amrex::Vector<std::string> PlotFileVarNames () const;
+
+    // put together an array of multifabs for writing
+    amrex::Vector<const amrex::MultiFab*> PlotFileMF () const;
+
+    // get plotfile name
+    std::string PlotFileName (int lev) const;
+
+    amrex::Vector<int> istep;      // which step
+    amrex::Vector<int> nsubsteps;  // how many substeps on each level
 
     // keep track of old time, new time, and time step at each level
     amrex::Vector<amrex::Real> t_new;
     amrex::Vector<amrex::Real> t_old;
     amrex::Vector<amrex::Real> a_new;
+    amrex::Vector<amrex::Real> a1;
+    amrex::Vector<amrex::Real> a2;
     amrex::Vector<amrex::Real> dt;
 
     // array of multifabs to store the solution at each level of refinement
     // after advancing a level we use "swap".
     amrex::Vector<amrex::MultiFab> phi_new;
-    amrex::Vector<amrex::MultiFab> phi_old;
+    amrex::Vector<amrex::MultiFab> phi_old; //4 3
+    amrex::MultiFab tij_new; //6
+    amrex::MultiFab hij_new; //6
+    amrex::MultiFab hij_old;
+    amrex::MultiFab hij_p; //6
 
     // this is essentially a 2*DIM integer array storing the physical boundary
     // condition types at the lo/hi walls in each direction
@@ -141,7 +188,7 @@ private:
     amrex::Real dt_0;
 
     // bubble initial time
-    amrex::Real dt_b = dt_0;
+    amrex::Real dt_b;
 
     // model parameter
     double kappa;
@@ -158,10 +205,17 @@ private:
     double ini_phi;
 
     // store the information of whether the bubble is allowed
-    amrex::Vector<int> signal_list;
+    std::vector<int> signal_list;
 
     // the list of the positions of bubble center after judgement
     std::vector<std::vector<double>> position_list_gather; 
+
+    // plotfile prefix and frequency
+    std::string plot_file {"plt"};
+
+    // how often each level regrids the higher levels of refinement
+    // (after a level advances that many time steps)
+    int regrid_int = 2;
 
 
 

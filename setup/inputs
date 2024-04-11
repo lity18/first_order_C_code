@@ -2,7 +2,7 @@
 # Problem size and geometry
 # *****************************************************************
 geometry.prob_lo     =  0.0  0.0  0.0 
-geometry.prob_hi     =  100.0  100.0  100.0
+geometry.prob_hi     =  32.0  32.0  32.0
 
 
 # 1 = periodic
@@ -13,7 +13,7 @@ geometry.is_periodic =  1    1    1
 # *****************************************************************
 # Resolution and refinement
 # *****************************************************************
-amr.n_cell          = 64 64 64
+amr.n_cell          = 256 256 256
 amr.max_level       = 2       # maximum level number allowed -- 
                               # number of levels = max_level + 1
 amr.ref_ratio       = 2 2 2 2 # refinement ratio between levels
@@ -28,7 +28,7 @@ amr.blocking_factor_x = 8
 amr.blocking_factor_y = 8
 amr.blocking_factor_z = 8
 
-amr.max_grid_size   = 64
+amr.max_grid_size   = 32
 
 amr.regrid_int      = 2       # how often to regrid
 
@@ -43,13 +43,13 @@ amr.v              = 0       # verbosity in Amr
 #            if d phi/dx > 1.1  at level 1, then refine 
 #            if d phi/dx > 1.5  at level 2, then refine 
 # *****************************************************************
-core.phierr = 0.5  1.1  1.1
+core.phierr = 0.02  0.02  0.02
 
 # Hubble parameter
-Hubble_constant = 0.1
+Hubble_constant = 0.35
 
 # time resolution
-dt = 0.5
+dt = 0.02
 
 # model parameter
 kappa = 0.1

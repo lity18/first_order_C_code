@@ -13,6 +13,7 @@ DIM	= 3
 COMP    = gnu
 
 USE_MPI   = TRUE
+#MPI_THREAD_MULTIPLE = TRUE
 USE_OMP   = FALSE
 
 include $(AMREX_HOME)/Tools/GNUMake/Make.defs

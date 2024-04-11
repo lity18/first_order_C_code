@@ -29,8 +29,10 @@ int main(int argc, char* argv[])
 
 
 
+
         // wallclock time
         auto end_total = amrex::second() - strt_total;
+
         ParallelDescriptor::ReduceRealMax(end_total ,ParallelDescriptor::IOProcessorNumber());
         amrex::Print() << "\nTotal Time: " << end_total << '\n';
     }

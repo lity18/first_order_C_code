@@ -4,3 +4,5 @@ CEXE_headers += bc_fill.H
 
 CEXE_sources += step.cpp
 CEXE_sources += bubble.cpp
+CEXE_sources += AdvancePhiAtLevel.cpp
+CEXE_sources += tij.cpp

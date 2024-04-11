@@ -9,6 +9,7 @@
 
 #include <MainCore.H>
 #include <Kernels.H>
+#include <mpi.h>
 
 using namespace amrex;
 
@@ -21,10 +22,23 @@ MainCore::MainCore()
     // But the arrays for them have been resized.
     int nlevs_max = max_level + 1;
 
+    istep.resize(nlevs_max, 0);
+    nsubsteps.resize(nlevs_max, 1);
+
+    for (int lev = 1; lev <= max_level; ++lev) {
+        nsubsteps[lev] = MaxRefRatio(lev-1);
+    }
+
     t_new.resize(nlevs_max, 0.0);
     a_new.resize(nlevs_max, 1.0);
+    a1.resize(nlevs_max, 1.0);
+    a2.resize(nlevs_max, 1.0);
     t_old.resize(nlevs_max, -1.e100);
     dt.resize(nlevs_max, 1.e100);
+    dt[0] = dt_0;
+    for (int lev = 1; lev < nlevs_max; ++lev) {
+        dt[lev] = dt[lev-1] / 2;
+    }
 
     phi_new.resize(nlevs_max);
     phi_old.resize(nlevs_max);
@@ -87,26 +101,148 @@ MainCore::InitData()
 void
 MainCore::Evolve()
 {
-
+    int myproc = ParallelDescriptor::MyProc();  // rank
+    Real cur_time = t_new[0];
+    auto strt_total = amrex::second();
     bubble_position();
+
+    auto end_total = amrex::second() - strt_total;
+
+    ParallelDescriptor::ReduceRealMax(end_total ,ParallelDescriptor::IOProcessorNumber());
+    amrex::Print() << "\nTotal Time: " << end_total << '\n';
+    strt_total = amrex::second();
+
+
+    input_bubble(cur_time);
+
+    
+    end_total = amrex::second() - strt_total;
+
+    ParallelDescriptor::ReduceRealMax(end_total ,ParallelDescriptor::IOProcessorNumber());
+    amrex::Print() << "\nTotal Time: " << end_total << '\n';
+    strt_total = amrex::second();
+
+
+    for(int step=0;step<100;step++){
+        timeStep(0, cur_time);
+        cur_time += dt[0];
+        if(step % 10==0 && myproc == 0){cout << step << endl;}
+        
+    }
+    end_total = amrex::second() - strt_total;
+
+    ParallelDescriptor::ReduceRealMax(end_total ,ParallelDescriptor::IOProcessorNumber());
+    amrex::Print() << "\nTotal Time: " << end_total << '\n';
+
+    WritePlotFile();
+    
+    
+
+
+
+    //WritePlotFile();
     
 
 
 
 }
 
+
+
+// Advance a level by dt
+// (includes a recursive call for finer levels)
+void
+MainCore::timeStep (int lev, Real time)
+{
+    if (regrid_int > 0)  // We may need to regrid
+    {
+
+        // help keep track of whether a level was already regridded
+        // from a coarser level call to regrid
+        static Vector<int> last_regrid_step(max_level+1, 0);
+
+        // regrid changes level "lev+1" so we don't regrid on max_level
+        // also make sure we don't regrid fine levels again if
+        // it was taken care of during a coarser regrid
+        if (lev < max_level && istep[lev] > last_regrid_step[lev])
+        {
+            if (istep[lev] % regrid_int == 0)
+            {
+                // regrid could add newly refine levels (if finest_level < max_level)
+                // so we save the previous finest level index
+                int old_finest = finest_level;
+                regrid(lev, time);
+
+                // mark that we have regridded this level already
+                for (int k = lev; k <= finest_level; ++k) {
+                    last_regrid_step[k] = istep[k];
+                }
+            }
+        }
+    }
+
+    // Advance a single level for a single time step, and update flux registers
+
+    t_old[lev] = t_new[lev];
+    t_new[lev] += dt[lev];
+
+    AdvancePhiAtLevel(lev, time, dt[lev]);
+
+    ++istep[lev];
+
+    if (lev < finest_level)
+    {
+        // recursive call for next-finer level
+        for (int i = 1; i <= nsubsteps[lev+1]; ++i)
+        {
+            timeStep(lev+1, time+(i-1)*dt[lev+1]);
+        }
+
+        AverageDownTo(lev); // average lev+1 down to lev
+    }
+
+}
+
+// Make a new level using provided BoxArray and DistributionMapping and
+// fill with interpolated coarse level data.
+// overrides the pure virtual function in AmrCore
 void 
 MainCore::MakeNewLevelFromCoarse (int lev, amrex::Real time, const amrex::BoxArray& ba,
                                          const amrex::DistributionMapping& dm)
 {
+    const int ncomp = phi_new[lev-1].nComp();
+    const int nghost = phi_new[lev-1].nGrow();
 
+    phi_new[lev].define(ba, dm, ncomp, nghost);
+    phi_old[lev].define(ba, dm, ncomp, nghost);
+
+    t_new[lev] = time;
+    t_old[lev] = time - 1.e200;
+
+    FillCoarsePatch(lev, time, phi_new[lev], 0, ncomp);
 }
 
+
+// Remake an existing level using provided BoxArray and DistributionMapping and
+// fill with existing fine and coarse data.
+// overrides the pure virtual function in AmrCore
 void
 MainCore::RemakeLevel (int lev, amrex::Real time, const amrex::BoxArray& ba,
                               const amrex::DistributionMapping& dm)
 {
+    const int ncomp = phi_new[lev].nComp();
+    const int nghost = phi_new[lev].nGrow();
 
+    MultiFab new_state(ba, dm, ncomp, nghost);
+    MultiFab old_state(ba, dm, ncomp, nghost);
+
+    FillPatch(lev, time, new_state, 0, ncomp);
+
+    std::swap(new_state, phi_new[lev]);
+    std::swap(old_state, phi_old[lev]);
+
+    t_new[lev] = time;
+    t_old[lev] = time - 1.e200;
 }
 
 
@@ -128,7 +264,7 @@ MainCore::MakeNewLevelFromScratch (int lev, amrex::Real time, const amrex::BoxAr
                                           const amrex::DistributionMapping& dm)
 {
     const int ncomp = 4;   // number of components
-    const int nghost = 1;   // number of ghost cells
+    const int nghost = 2;   // number of ghost cells
 
     phi_new[lev].define(ba, dm, ncomp, nghost);
     phi_old[lev].define(ba, dm, ncomp, nghost);
@@ -162,6 +298,7 @@ MainCore::ErrorEst (int lev, amrex::TagBoxArray& tags, amrex::Real time, int ngr
 {
     static bool first = true;
     static Vector<Real> phierr;
+    Real true_vac = sqrt((1 + sqrt(1 - 4 * kappa)) / 2 / kappa);
 
 
     // only do this during the first call to ErrorEst
@@ -180,18 +317,19 @@ MainCore::ErrorEst (int lev, amrex::TagBoxArray& tags, amrex::Real time, int ngr
     //    const int clearval = TagBox::CLEAR;
     const int   tagval = TagBox::SET;
     const MultiFab& state = phi_new[lev];
+    const auto dx     = Geom(lev).CellSizeArray();
 
     for (MFIter mfi(state,TilingIfNotGPU()); mfi.isValid(); ++mfi)
         {
             const Box& bx  = mfi.tilebox();
             const auto statefab = state.array(mfi);
             const auto tagfab  = tags.array(mfi);
-            Real phierror = phierr[lev];
+            Real phierror = pow(phierr[lev] * true_vac * 2 * M_PI / dx[0], 2);
 
             amrex::ParallelFor(bx,
             [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
-                state_error(i, j, k, tagfab, statefab, phierror, tagval);
+                state_error(i, j, k, tagfab, statefab, phierror, tagval, dx);
             });
         }
 }
@@ -206,7 +344,12 @@ MainCore::ReadParameters ()
         pp.query("dt", dt_0);
         pp.query("kappa", kappa);
 
+    }
 
+    {
+        ParmParse pp("amr"); // Traditionally, these have prefix, amr.
+
+        pp.query("regrid_int", regrid_int);
     }
 }
 
@@ -220,6 +363,27 @@ MainCore::AverageDown ()
                             geom[lev+1], geom[lev],
                             0, phi_new[lev].nComp(), refRatio(lev));
     }
+}
+
+
+void
+MainCore::AverageDownold ()
+{
+    for (int lev = finest_level-1; lev >= 0; --lev)
+    {
+        amrex::average_down(phi_old[lev+1], phi_old[lev],
+                            geom[lev+1], geom[lev],
+                            0, phi_old[lev].nComp(), refRatio(lev));
+    }
+}
+
+// more flexible version of AverageDown() that lets you average down across multiple levels
+void
+MainCore::AverageDownTo (int crse_lev)
+{
+    amrex::average_down(phi_new[crse_lev+1], phi_new[crse_lev],
+                        geom[crse_lev+1], geom[crse_lev],
+                        0, phi_new[crse_lev].nComp(), refRatio(crse_lev));
 }
 
 
@@ -349,3 +513,42 @@ MainCore::FillCoarsePatch (int lev, Real time, MultiFab& mf, int icomp, int ncom
     }
 }
 
+
+// write plotfile to disk
+void
+MainCore::WritePlotFile () const
+{
+    const std::string& plotfilename = PlotFileName(istep[0]);
+    const auto& mf = PlotFileMF();
+    const auto& varnames = PlotFileVarNames();
+
+    amrex::Print() << "Writing plotfile " << plotfilename << "\n";
+
+    amrex::WriteMultiLevelPlotfile(plotfilename, finest_level+1, mf, varnames,
+                                   Geom(), t_new[0], istep, refRatio());
+}
+
+
+// put together an array of multifabs for writing
+amrex::Vector<const amrex::MultiFab*> MainCore::PlotFileMF () const
+{
+    amrex::Vector<const amrex::MultiFab*> r;
+    for (int i = 0; i <= finest_level; ++i) {
+        r.push_back(&phi_new[i]);
+    }
+    return r;
+}
+
+// get plotfile name
+std::string
+MainCore::PlotFileName (int lev) const
+{
+    return amrex::Concatenate(plot_file, lev, 5);
+}
+
+// set plotfile variable names
+Vector<std::string>
+MainCore::PlotFileVarNames () const
+{
+    return {"phi"};
+}

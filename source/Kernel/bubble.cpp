@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <mpi.h>
 
 #include <AMReX_Box.H>
 #include <AMReX_FArrayBox.H>
@@ -155,77 +156,12 @@ void MainCore::bubble_struc()
 }
 
 
-// initialize the bubble, use trival value
-void MainCore::initbubble(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
-         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
-         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& dx)
-{
-    using namespace amrex;
-
-    const auto lo = lbound(bx);
-    const auto hi = ubound(bx);
-
-    const auto box_0 = Geom(0).Domain();
-    const auto dx_0 = Geom(0).CellSize();
-
-    double L = box_0.length(0) * dx_0[0];   //length of box
-
-
-    int list_length = (position_list_gather[0]).size();
-    double refer_dis = pow(wid_l / a_new[0], 2);
-
-    std::vector<double> posi_lo = {prob_lo[0], prob_lo[1], prob_lo[2]};
-    std::vector<double> posi_hi = {prob_lo[0] + dx[0] * (hi.x - lo.x), 
-                                prob_lo[1] + dx[1] * (hi.y - lo.y), 
-                                prob_lo[2] + dx[2] * (hi.z - lo.z)};
-
-
-    for(int num=0;num<list_length;++num){
-        double distance = min_distance(position_list_gather[num], posi_lo, posi_hi, L);
-        if(distance <= refer_dis){
-            for(int k = lo.z; k <= hi.z; ++k) {
-                double z_posi = prob_lo[2] + (0.5+k) * dx[2];
-                double z_dis = std::min(L - std::abs(z_posi - position_list_gather[num][2]), 
-                                    std::abs(z_posi - position_list_gather[num][2]));
-                for(int j = lo.y; j <= hi.y; ++j) {
-                    double y_posi = prob_lo[1] + (0.5+j) * dx[1];
-                    double y_dis =std::min(L - std::abs(y_posi - position_list_gather[num][1]), 
-                                    std::abs(y_posi - position_list_gather[num][1]));
-                    for(int i = lo.x; i <= hi.x; ++i) {
-                        double x_posi = prob_lo[0] + (0.5+i) * dx[0];
-                        double x_dis = std::min(L - std::abs(x_posi - position_list_gather[num][0]), 
-                                        std::abs(x_posi - position_list_gather[num][0]));
-                        double r_dis = x_dis * x_dis + y_dis * y_dis + z_dis * z_dis;
-                        if(r_dis < pow(dt_0 + dt_b, 2)){
-                            phi(i, j, k, 0) += ini_phi * sin(position_list_gather[num][3]);
-                            phi(i, j, k, 1) += ini_phi * cos(position_list_gather[num][3]);
-                        }
-                        else if(r_dis < refer_dis + dt_b * dt_b){
-                            phi(i, j, k, 0) += ini_phi * sin(position_list_gather[num][3]);
-                            phi(i, j, k, 1) += ini_phi * cos(position_list_gather[num][3]);
-                            phi(i, j, k, 2) += ini_phi * sin(position_list_gather[num][3]);
-                            phi(i, j, k, 3) += ini_phi * cos(position_list_gather[num][3]);
-                        }
-                        else{}
-
-
-                    }
-                }
-            }
-        }
-    }
-
-
-
-
-}
-
-
 // minimal distance between the bubble center and the box region
-double min_distance(std::vector<double> const& list, std::vector<double>& posi_lo, 
+Real min_distance(std::vector<double> const& list, std::vector<double>& posi_lo, 
                                                 std::vector<double>& posi_hi, double L)
 {
-    double distance=0, radius_i;
+    Real distance, radius_i;
+    distance = 0;
     for(int i=0;i<3;++i){
         if(posi_lo[i] <= list[i] && list[i] <= posi_hi[i]){
             radius_i = 0;
@@ -241,6 +177,78 @@ double min_distance(std::vector<double> const& list, std::vector<double>& posi_l
 }
 
 
+
+
+// initialize the bubble, use trival value
+void MainCore::initbubble(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& dx)
+{
+    using namespace amrex;
+
+    const auto lo = lbound(bx);
+    const auto hi = ubound(bx);
+    dt_b = dt_0;
+
+    const auto box_0 = Geom(0).Domain();
+    const auto dx_0 = Geom(0).CellSize();
+
+    double L = box_0.length(0) * dx_0[0];   //length of box
+
+    int list_length = position_list_gather.size();
+    double refer_dis = pow(wid_l / a_new[0], 2); //the comoving boundary of bubble
+    double refer_center = pow(dt_0 / 2 + dt_b, 2); // the comoving center of bubble
+    double refer_s = refer_dis + dt_b * dt_b; // the comoving boundary s value of bubble
+    double a4 = pow(a_new[0], 4) * dt_0; // a ** 4 * t0
+
+    std::vector<double> posi_lo = {prob_lo[0] + dx[0] * lo.x, 
+                                    prob_lo[1] + dx[1] * lo.y, 
+                                    prob_lo[2] + dx[2] * lo.z};
+    std::vector<double> posi_hi = {prob_lo[0] + dx[0] * hi.x, 
+                                prob_lo[1] + dx[1] * hi.y, 
+                                prob_lo[2] + dx[2] * hi.z};
+
+    
+    for(int num=0;num<list_length;++num){
+        double distance = min_distance(position_list_gather[num], posi_lo, posi_hi, L);
+        if(distance <= refer_dis){
+            double sin_ = sin(position_list_gather[num][3]);
+            double cos_ = cos(position_list_gather[num][3]);
+            for(int k = lo.z; k <= hi.z; ++k) {
+                double z_posi = prob_lo[2] + (0.5+k) * dx[2];
+                double z_dis = std::min(L - std::abs(z_posi - position_list_gather[num][2]), 
+                                    std::abs(z_posi - position_list_gather[num][2]));
+                for(int j = lo.y; j <= hi.y; ++j) {
+                    double y_posi = prob_lo[1] + (0.5+j) * dx[1];
+                    double y_dis =std::min(L - std::abs(y_posi - position_list_gather[num][1]), 
+                                    std::abs(y_posi - position_list_gather[num][1]));
+                    for(int i = lo.x; i <= hi.x; ++i) {
+                        double x_posi = prob_lo[0] + (0.5+i) * dx[0];
+                        double x_dis = std::min(L - std::abs(x_posi - position_list_gather[num][0]), 
+                                        std::abs(x_posi - position_list_gather[num][0]));
+                        double r_dis = x_dis * x_dis + y_dis * y_dis + z_dis * z_dis;
+                        if(r_dis < refer_center){
+                            phi(i, j, k, 0) = ini_phi * sin_;
+                            phi(i, j, k, 1) = ini_phi * cos_;
+                        }
+                        else if(r_dis < refer_s){
+                            double r_s = a_new[0] * sqrt(r_dis - dt_0 * dt_0);
+                            phi(i, j, k, 0) = bounce_x(r_s) * sin_;
+                            phi(i, j, k, 1) = bounce_x(r_s) * cos_;
+                            phi(i, j, k, 2) = -bounce_p(r_s) * sin_ / r_s * a4 ;
+                            phi(i, j, k, 3) = -bounce_p(r_s) * cos_ / r_s * a4 ;
+                        }
+                        else{}
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+
+
 // decide whether a bubble can be generated
 void MainCore::judgebubble(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
          amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
@@ -253,14 +261,16 @@ void MainCore::judgebubble(amrex::Box const& bx, amrex::Array4<amrex::Real> cons
     const auto hi = ubound(bx);
     double true_vac = sqrt((1 + sqrt(1 - 4 * kappa)) / 2 / kappa);
     double refer_dis = pow(wid_s / a_new[0], 2);
-    double refer_phi = pow(true_vac / 10, 2)
+    double refer_phi = pow(true_vac / 10, 2);
 
     int list_length = position_list.size();
 
-    std::vector<double> posi_lo = {prob_lo[0], prob_lo[1], prob_lo[2]};
-    std::vector<double> posi_hi = {prob_lo[0] + dx[0] * (hi.x - lo.x), 
-                                prob_lo[1] + dx[1] * (hi.y - lo.y), 
-                                prob_lo[2] + dx[2] * (hi.z - lo.z)};
+    std::vector<double> posi_lo = {prob_lo[0] + dx[0] * lo.x, 
+                                    prob_lo[1] + dx[1] * lo.y, 
+                                    prob_lo[2] + dx[2] * lo.z};
+    std::vector<double> posi_hi = {prob_lo[0] + dx[0] * hi.x, 
+                                prob_lo[1] + dx[1] * hi.y, 
+                                prob_lo[2] + dx[2] * hi.z};
     for(int num=0;num<list_length;++num){
         double distance = min_distance(position_list[num], posi_lo, posi_hi, L);
         if(signal_list[num]==1 && distance <= refer_dis){
@@ -273,7 +283,7 @@ void MainCore::judgebubble(amrex::Box const& bx, amrex::Array4<amrex::Real> cons
                     double y_dis =std::min(L - std::abs(y_posi - position_list[num][1]), 
                                     std::abs(y_posi - position_list[num][1]));
                     for(int i = lo.x; i <= hi.x && signal_list[num]==1; ++i) {
-                        double phi_abs = pow(phi(i, j, k, 0), 2) + pow(phi(i, j, k, 1), 2)
+                        double phi_abs = pow(phi(i, j, k, 0), 2) + pow(phi(i, j, k, 1), 2);
                         if(phi_abs > refer_phi){
                             double x_posi = prob_lo[0] + (0.5+i) * dx[0];
                             double x_dis = std::min(L - std::abs(x_posi - position_list[num][0]), 
@@ -291,3 +301,69 @@ void MainCore::judgebubble(amrex::Box const& bx, amrex::Array4<amrex::Real> cons
 }
 
 
+// initialize the bubble, use trival value
+void MainCore::initbubble_0(amrex::Box const& bx, amrex::Array4<amrex::Real> const& phi,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& prob_lo,
+         amrex::GpuArray<amrex::Real,AMREX_SPACEDIM> const& dx,
+         std::vector<std::vector<double>> const& position_list)
+{
+    using namespace amrex;
+
+    const auto lo = lbound(bx);
+    const auto hi = ubound(bx);
+    dt_b = dt_0;
+
+    const auto box_0 = Geom(0).Domain();
+    const auto dx_0 = Geom(0).CellSize();
+
+    double L = box_0.length(0) * dx_0[0];   //length of box
+
+    int list_length = position_list.size();
+    double refer_dis = pow(wid_l / a_new[0], 2); //the comoving boundary of bubble
+    double refer_center = pow(dt_0 / 2 + dt_b, 2); // the comoving center of bubble
+    double refer_s = refer_dis + dt_b * dt_b; // the comoving boundary s value of bubble
+    double a4 = pow(a_new[0], 4) * dt_0; // a ** 4 * t0
+
+    std::vector<double> posi_lo = {prob_lo[0] + dx[0] * lo.x, 
+                                    prob_lo[1] + dx[1] * lo.y, 
+                                    prob_lo[2] + dx[2] * lo.z};
+    std::vector<double> posi_hi = {prob_lo[0] + dx[0] * hi.x, 
+                                prob_lo[1] + dx[1] * hi.y, 
+                                prob_lo[2] + dx[2] * hi.z};
+    for(int num=0;num<list_length;++num){
+        double distance = min_distance(position_list[num], posi_lo, posi_hi, L);
+        if(distance <= refer_dis){
+            double sin_ = sin(position_list[num][3]);
+            double cos_ = cos(position_list[num][3]);
+            for(int k = lo.z; k <= hi.z; ++k) {
+                double z_posi = prob_lo[2] + (0.5+k) * dx[2];
+                double z_dis = std::min(L - std::abs(z_posi - position_list[num][2]), 
+                                    std::abs(z_posi - position_list[num][2]));
+                for(int j = lo.y; j <= hi.y; ++j) {
+                    double y_posi = prob_lo[1] + (0.5+j) * dx[1];
+                    double y_dis =std::min(L - std::abs(y_posi - position_list[num][1]), 
+                                    std::abs(y_posi - position_list[num][1]));
+                    for(int i = lo.x; i <= hi.x; ++i) {
+                        double x_posi = prob_lo[0] + (0.5+i) * dx[0];
+                        double x_dis = std::min(L - std::abs(x_posi - position_list[num][0]), 
+                                        std::abs(x_posi - position_list[num][0]));
+                        double r_dis = x_dis * x_dis + y_dis * y_dis + z_dis * z_dis;
+                        if(r_dis < refer_center){
+                            phi(i, j, k, 0) = ini_phi * sin_;
+                            phi(i, j, k, 1) = ini_phi * cos_;
+                        }
+                        else if(r_dis < refer_s){
+                            double r_s = a_new[0] * sqrt(r_dis - dt_0 * dt_0);
+                            phi(i, j, k, 0) += bounce_x(r_s) * sin_;
+                            phi(i, j, k, 1) += bounce_x(r_s) * cos_;
+                            phi(i, j, k, 2) -= bounce_p(r_s) * sin_ / r_s * a4 ;
+                            phi(i, j, k, 3) -= bounce_p(r_s) * cos_ / r_s * a4 ;
+                        }
+                        else{}
+                    }
+                }
+            }
+        }
+    }
+
+}

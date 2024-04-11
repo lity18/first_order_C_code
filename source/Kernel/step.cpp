@@ -2,8 +2,11 @@
 #include <AMReX_FluxRegister.H>
 #include <AMReX_BCRec.H>
 #include <AMReX_ParallelDescriptor.H>
+#include <AMReX_Print.H>
 
-
+#include <algorithm>
+#include <utility>
+#include <ostream>
 #include <random>
 #include<bits/stdc++.h>
 #include <mpi.h>
@@ -19,7 +22,7 @@ MainCore::input_bubble(Real time)
 {
     using namespace amrex;
     int new_finest;
-    Vector<BoxArray> new_grids(finest_level+2);
+    Vector<BoxArray> new_grids(max_level + 1);
 
     BoxArray level_grids = grids[0];
     DistributionMapping level_dmap = dmap[0];
@@ -27,13 +30,14 @@ MainCore::input_bubble(Real time)
     input_level_bubble(0, time, level_grids, level_dmap);
     MakeNewGrids(0, time, new_finest, new_grids);
 
+
     for (int lev = 1; lev <= new_finest; ++lev)
     {
         if (lev <= finest_level) // an old level
         {
             bool ba_changed = (new_grids[lev] != grids[lev]);
-            BoxArray level_grids = grids[lev];
-            DistributionMapping level_dmap = dmap[lev];
+            level_grids = grids[lev];
+            level_dmap = dmap[lev];
             if (ba_changed) {
                 level_grids = new_grids[lev];
                 level_dmap = DistributionMapping(level_grids);
@@ -41,9 +45,6 @@ MainCore::input_bubble(Real time)
             const auto old_num_setdm = num_setdm;
             
             input_level_bubble(lev, time, level_grids, level_dmap);
-            if(lev < max_level){
-            MakeNewGrids(lev, time, new_finest, new_grids);
-            }
 
             SetBoxArray(lev, level_grids);
             if (old_num_setdm == num_setdm) {
@@ -54,20 +55,18 @@ MainCore::input_bubble(Real time)
         {
             DistributionMapping new_dmap(new_grids[lev]);
             const auto old_num_setdm = num_setdm;
-            input_newlevel_bubble(lev, time, new_grids[lev], level_dmap);
+            input_newlevel_bubble(lev, time, new_grids[lev], new_dmap);
             SetBoxArray(lev, new_grids[lev]);
             if (old_num_setdm == num_setdm) {
                 SetDistributionMap(lev, new_dmap);
             }
+            finest_level = new_finest;
         }
+        if(lev < max_level){
+            MakeNewGrids(lev, time, new_finest, new_grids);
+            }
+              
     }
-    for (int lev = new_finest+1; lev <= finest_level; ++lev) {
-        ClearLevel(lev);
-        ClearBoxArray(lev);
-        ClearDistributionMap(lev);
-    }
-
-    finest_level = new_finest;
 
 }
 
@@ -77,6 +76,7 @@ void
 MainCore::input_level_bubble(int lev, Real time, const BoxArray& ba, const DistributionMapping& dm)
 {
     using namespace amrex;
+
     if(lev != 0){
         const int ncomp = phi_new[lev].nComp();
         const int nghost = phi_new[lev].nGrow();
@@ -106,7 +106,12 @@ MainCore::input_level_bubble(int lev, Real time, const BoxArray& ba, const Distr
         amrex::launch(box,
         [=] AMREX_GPU_DEVICE (Box const& tbx)
         {
-            initbubble(tbx, fab, problo, dx);
+            if(lev == 0){
+                initbubble_0(tbx, fab, problo, dx, position_list_gather);
+            }
+            else{
+                initbubble(tbx, fab, problo, dx);
+            }
         });
     }
 
@@ -152,10 +157,13 @@ MainCore::input_newlevel_bubble(int lev, Real time, const BoxArray& ba, const Di
 // generate bubble coordinate
 void MainCore::bubble_position()
 {
-    int myproc = ParallelDescriptor::MyProc();  // rank
-    int nprocs = ParallelDescriptor::NProcs();  // number of process
+    int myproc, nprocs;
+    MPI_Comm_rank(MPI_COMM_WORLD,&myproc);
+    MPI_Comm_size(MPI_COMM_WORLD,&nprocs);
+    //int myproc = ParallelDescriptor::MyProc();  // rank
+    //int nprocs = ParallelDescriptor::NProcs();  // number of process
     int list_size;
-
+    
     std::vector<std::vector<double>> position_list; // the list of the positions of bubble center
 
     const auto box = Geom(0).Domain();
@@ -206,24 +214,24 @@ void MainCore::bubble_position()
         MPI_Bcast(position_list[i].data(),4,MPI_DOUBLE,0,MPI_COMM_WORLD); // bcast the list
     } 
 
-    amrex::Vector<int> signal_list_0(list_size, 1);   
+    std::vector<int> signal_list_0(list_size, 1);   
     std::swap(signal_list_0, signal_list);
 
     for(int lev=0;lev<=finest_level;++lev){
         MultiFab& state = phi_new[lev];
 
         const auto problo = Geom(lev).ProbLoArray();
-        const auto dx     = Geom(lev).CellSizeArray();
+        const auto dx1     = Geom(lev).CellSizeArray();
 
         for (MFIter mfi(state,TilingIfNotGPU()); mfi.isValid(); ++mfi) // then input bubbles
         {
             Array4<Real> fab = state[mfi].array();
-            const Box& box = mfi.tilebox();
+            const Box& box1 = mfi.tilebox();
 
-            amrex::launch(box,
+            amrex::launch(box1,
             [=] AMREX_GPU_DEVICE (Box const& tbx)
             {
-                judgebubble(tbx, fab, problo, dx, position_list, L); // decide whether the bubble can be generated
+                judgebubble(tbx, fab, problo, dx1, position_list, L); // decide whether the bubble can be generated
             });
         }
     }
@@ -232,14 +240,22 @@ void MainCore::bubble_position()
     std::vector<std::vector<double>> position_list_gather_0; // the list of the positions of bubble center after judgement
 
     signal_gather.resize(nprocs, 1);
-
+    position_list_gather.resize(1, {0, 0, 0, 0});
+    int signal_all=1;
+    
     for(int i=0;i<list_size;++i){
-        MPI_Allgather(&signal_list[i], 1, MPI_INT, signal_gather.data(), nprocs, MPI_INT, MPI_COMM_WORLD);
-        int signal_all = accumulate(signal_gather.begin(), signal_gather.end(), 1, multiplies<int>());
+        MPI_Gather(&signal_list[i], 1, MPI_INT, signal_gather.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if(myproc == 0){
+            signal_all = accumulate(signal_gather.begin(), signal_gather.end(), 1, multiplies<int>());
+        }
+        MPI_Bcast(&signal_all,1,MPI_INT,0,MPI_COMM_WORLD);
         if(signal_all == 1){
             position_list_gather_0.push_back(position_list[i]);
         }
     }
+    //cout << position_list_gather_0.size() << endl;
+    //position_list_gather.resize(1);
     std::swap(position_list_gather_0, position_list_gather);
+    
     
 }
